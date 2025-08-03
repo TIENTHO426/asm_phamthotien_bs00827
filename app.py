@@ -1,96 +1,86 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder
+import plotly.express as px  # Yêu cầu có trong requirements.txt
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
-import matplotlib.pyplot as plt
-import seaborn as sns
-import plotly.express as px
-import os
+from sklearn.metrics import mean_squared_error, r2_score
 
-st.set_page_config(layout="wide")
+# --- UI Title ---
 st.title("Demand Forecasting Dashboard")
 
+# --- Load Data ---
 @st.cache_data
-def load_and_preprocess_data():
-    # Đọc dữ liệu gốc
-    df = pd.read_csv("data.csv")
+def load_data():
+    df = pd.read_csv("sales_data.csv")  # Bạn có thể đổi tên file tại đây
+    df['Date'] = pd.to_datetime(df['Date'])
+    return df
 
-    # Chuyển đổi cột Date thành datetime
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-    df.dropna(subset=['Date'], inplace=True)
+df = load_data()
 
-    # Mã hóa các cột phân loại
-    le_dict = {}
-    for col in ['Gender', 'Product Category']:
-        le = LabelEncoder()
-        df[col] = le.fit_transform(df[col])
-        le_dict[col] = le
+# --- Sidebar Filters ---
+st.sidebar.header("Filter Options")
+product_list = df["Product Category"].unique().tolist()
+selected_product = st.sidebar.selectbox("Select Product Category", product_list)
 
-    # Feature Engineering
-    df['Year'] = df['Date'].dt.year
-    df['Month'] = df['Date'].dt.month
-    df['Day'] = df['Date'].dt.day
-    df['Weekday'] = df['Date'].dt.weekday
+date_range = st.sidebar.date_input("Select Date Range",
+    [df["Date"].min(), df["Date"].max()])
 
-    return df, le_dict
+# --- Filtered Data ---
+filtered_df = df[
+    (df["Product Category"] == selected_product) &
+    (df["Date"] >= pd.to_datetime(date_range[0])) &
+    (df["Date"] <= pd.to_datetime(date_range[1]))
+]
 
-df, le_dict = load_and_preprocess_data()
+# --- Group by Date ---
+grouped_df = filtered_df.groupby("Date")["Quantity"].sum().reset_index()
 
-# Chia dữ liệu train/test
-features = ['Gender', 'Age', 'Product Category', 'Quantity', 'Price per Unit', 'Year', 'Month', 'Day', 'Weekday']
-X = df[features]
-y = df['Total Amount']
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+# --- Show Data ---
+st.subheader(f"Total Quantity Sold Over Time: {selected_product}")
+fig = px.line(grouped_df, x="Date", y="Quantity", title="Sales Over Time")
+st.plotly_chart(fig)
 
-# Huấn luyện mô hình
+# --- Model Training ---
+st.subheader("Train Forecasting Model")
+grouped_df['day'] = np.arange(len(grouped_df)).reshape(-1, 1)
+
+X = grouped_df[['day']]
+y = grouped_df['Quantity']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42)
+
 model = LinearRegression()
 model.fit(X_train, y_train)
+
 y_pred = model.predict(X_test)
 
-# Dashboard
-st.sidebar.header("Filter Options")
-selected_category = st.sidebar.selectbox("Select Product Category", options=sorted(df['Product Category'].unique()))
-selected_year = st.sidebar.selectbox("Select Year", options=sorted(df['Year'].unique()))
-
-filtered_df = df[(df['Product Category'] == selected_category) & (df['Year'] == selected_year)]
-
-# Biểu đồ dự đoán
-st.subheader("Actual vs Predicted Total Amount")
-fig1 = px.scatter(
-    x=y_test,
-    y=y_pred,
-    labels={'x': 'Actual Amount', 'y': 'Predicted Amount'},
-    title="Actual vs Predicted",
-    opacity=0.7
-)
-st.plotly_chart(fig1, use_container_width=True)
-
-# Biểu đồ theo thời gian
-st.subheader("Total Amount by Date")
-daily_total = filtered_df.groupby('Date')['Total Amount'].sum().reset_index()
-fig2 = px.line(daily_total, x='Date', y='Total Amount', title='Daily Sales Amount')
-st.plotly_chart(fig2, use_container_width=True)
-
-# Hiển thị dữ liệu đã lọc
-st.subheader("Filtered Data Sample")
-st.dataframe(filtered_df.head(20))
-
-# Đánh giá mô hình
-st.subheader("Model Evaluation")
-from sklearn.metrics import mean_squared_error, r2_score
+# --- Model Evaluation ---
 mse = mean_squared_error(y_test, y_pred)
 r2 = r2_score(y_test, y_pred)
-st.write(f"**Mean Squared Error (MSE):** {mse:.2f}")
-st.write(f"**R-squared Score:** {r2:.2f}")
 
-# Kết luận và cải tiến
-st.markdown("""
-### 📌 Kết luận và Đề xuất cải tiến:
-- Mô hình Linear Regression đã học được mối quan hệ tổng thể giữa các đặc trưng và Total Amount.
-- **R-squared** cho thấy mức độ phù hợp tương đối, nhưng có thể được cải thiện bằng:
-    - Thêm các biến tương tác hoặc biến thời gian (lag, moving average).
-    - Sử dụng mô hình phi tuyến như Random Forest hoặc XGBoost.
-    - Huấn luyện riêng cho từng Product Category.
-""")
+st.write("**Model Evaluation Metrics**")
+st.write(f"Mean Squared Error (MSE): {mse:.2f}")
+st.write(f"R² Score: {r2:.2f}")
+
+# --- Forecast Visualization ---
+future_days = st.slider("Forecast Days into Future", 7, 60, 30)
+future_X = np.arange(len(grouped_df), len(grouped_df) + future_days).reshape(-1, 1)
+future_y = model.predict(future_X)
+
+future_df = pd.DataFrame({
+    "Date": pd.date_range(start=grouped_df["Date"].iloc[-1] + pd.Timedelta(days=1), periods=future_days),
+    "Predicted Quantity": future_y
+})
+
+combined_df = pd.concat([
+    grouped_df[["Date", "Quantity"]].rename(columns={"Quantity": "Demand"}),
+    future_df.rename(columns={"Predicted Quantity": "Demand"})
+])
+
+combined_df["Type"] = ["Historical"] * len(grouped_df) + ["Forecast"] * len(future_df)
+
+st.subheader("Forecast Result")
+fig2 = px.line(combined_df, x="Date", y="Demand", color="Type", title="Demand Forecast")
+st.plotly_chart(fig2)
